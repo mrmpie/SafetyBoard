@@ -1,0 +1,6 @@
+-v "C:/intelFPGA_lite/23.1std/quartus/eda/sim_lib/fiftyfivenm_atoms.v"
+-v "C:/intelFPGA_lite/23.1std/quartus/eda/sim_lib/mentor/fiftyfivenm_atoms_ncrypt.v"
+-v "C:/intelFPGA_lite/23.1std/quartus/eda/sim_lib/altera_primitives.v"
+-v "C:/intelFPGA_lite/23.1std/quartus/eda/sim_lib/max_atoms.v"
+
+
