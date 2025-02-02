@@ -33,6 +33,7 @@ interface SafetyBoardInterface;
     
     // Debug signals
     logic [2:0] current_state;      // Current state of the state machine
+    logic [2:0] validate_state;     // Current state of the validation state machine
     
     // New signals
     logic [5:0] shutdown_commands;  // From outputs to safety board
@@ -45,7 +46,7 @@ interface SafetyBoardInterface;
               interlink_req_dist5,
               router_feedback,
         output router_cmd, invalid_request, feedback_timeout_error, 
-               current_state,
+               current_state, validate_state,
         input  shutdown_commands,
         output pg_shutdown
     );
@@ -57,7 +58,7 @@ interface SafetyBoardInterface;
               interlink_req_dist5,
               router_feedback,
         input  router_cmd, invalid_request, feedback_timeout_error,
-              current_state,
+              current_state, validate_state,
         output shutdown_commands,
         input  pg_shutdown
     );
@@ -71,15 +72,30 @@ module SafetyBoard #(
     // State machine states
     typedef enum logic [2:0] {
         IDLE          = 3'b000,
-        WAIT_FEEDBACK = 3'b001,
-        FEEDBACK_ERROR = 3'b010,
-        COMMAND_READY  = 3'b011
+        VALIDATE_REQ  = 3'b001,
+        WAIT_FEEDBACK = 3'b010,
+        FEEDBACK_ERROR = 3'b011,
+        COMMAND_READY  = 3'b100
     } state_t;
+    
+    // Request validation states
+    typedef enum logic [2:0] {
+        INIT_CHECK     = 3'b000,
+        CHECK_OUTPUTS  = 3'b001,
+        FWD_CHECK      = 3'b010,
+        BWD_CHECK      = 3'b011,
+        CHECK_COMPLETE = 3'b100
+    } validate_state_t;
     
     // Internal state tracking
     state_t current_state;
+    validate_state_t validate_state;
     logic [20:0] contactor_commanded;
     logic [5:0][5:0] request_matrix;
+    
+    // Validation state tracking
+    logic [2:0] check_i, check_j;
+    logic validation_invalid;
     
     // Feedback tracking
     logic [$clog2(FEEDBACK_TIMEOUT_CYCLES):0] feedback_timeout_counter;
@@ -190,8 +206,9 @@ module SafetyBoard #(
         set_matrix_entry(0, 5, sif.interlink_req_dist5);
     endfunction
 
-    // Assign current state to interface for debug
+    // Assign current states to interface for debug
     assign sif.current_state = current_state;
+    assign sif.validate_state = validate_state;
 
     // Helper function to check feedback for a specific connection
     function automatic logic check_connection_feedback(int index);
@@ -253,40 +270,128 @@ module SafetyBoard #(
             pending_command <= '0;
             request_matrix <= '0;
             current_state <= IDLE;
+            validate_state <= INIT_CHECK;
+            check_i <= '0;
+            check_j <= '0;
+            validation_invalid <= '0;
         end else begin
             case (current_state)
                 IDLE: begin
                     // Build request matrix first
                     build_request_matrix();
                     
-                    // Check for invalid requests using the matrix
-                    sif.invalid_request <= check_invalid_request();
+                    // Initialize validation state machine
+                    validate_state <= INIT_CHECK;
+                    check_i <= '0;
+                    check_j <= '0;
+                    validation_invalid <= '0;
                     
-                    if (!check_invalid_request()) begin
-                        // Process output requests from matrix diagonal
-                        for (int i = 0; i < 6; i++) begin
-                            if (request_matrix[i][i]) begin  // Output request
-                                pending_command[get_output_idx(i)] = 1'b1;
+                    // Move to validation state
+                    current_state <= VALIDATE_REQ;
+                end
+
+                VALIDATE_REQ: begin
+                    case (validate_state)
+                        INIT_CHECK: begin
+                            // Initialize array
+                            for (int i = 0; i < 6; i++) begin
+                                pg_output_assignments[i] = 0;
+                                if (request_matrix[i][i]) begin
+                                    pg_output_assignments[i] = i + 1;
+                                end
+                            end
+                            validate_state <= CHECK_OUTPUTS;
+                        end
+
+                        CHECK_OUTPUTS: begin
+                            // Verify no conflicts in direct output assignments
+                            if (check_i < 6) begin
+                                if (check_j < 6) begin
+                                    if (check_i != check_j && 
+                                        pg_output_assignments[check_i] != 0 && 
+                                        pg_output_assignments[check_j] != 0 &&
+                                        pg_output_assignments[check_i] == pg_output_assignments[check_j]) begin
+                                        validation_invalid <= 1'b1;
+                                    end
+                                    check_j <= check_j + 1;
+                                end else begin
+                                    check_j <= '0;
+                                    check_i <= check_i + 1;
+                                end
                             end else begin
-                                pending_command[get_output_idx(i)] = 1'b0;
+                                check_i <= '0;
+                                check_j <= '0;
+                                validate_state <= FWD_CHECK;
                             end
                         end
 
-                        // Process interlink requests from upper triangle of matrix
-                        for (int i = 0; i < 5; i++) begin
-                            for (int j = i + 1; j < 6; j++) begin
-                                if (request_matrix[i][j]) begin
-                                    pending_command[get_interlink_idx(i, j)] = 1'b1;
+                        FWD_CHECK: begin
+                            // Forward pass: Check upper triangular part
+                            if (check_i < 5 && !validation_invalid) begin
+                                if (check_j <= 5) begin
+                                    if (check_j > check_i && request_matrix[check_i][check_j]) begin
+                                        validation_invalid <= check_pg_connection(check_i, check_j);
+                                    end
+                                    check_j <= check_j + 1;
                                 end else begin
-                                    pending_command[get_interlink_idx(i, j)] = 1'b0;
+                                    check_j <= check_i + 2;
+                                    check_i <= check_i + 1;
                                 end
+                            end else begin
+                                check_i <= 4;
+                                check_j <= 5;
+                                validate_state <= BWD_CHECK;
                             end
-                        end  
-                        contactor_commanded <= pending_command;
-                    end
-						  // Move to feedback wait state
-						  feedback_timeout_counter <= '0;
-						  current_state <= WAIT_FEEDBACK;
+                        end
+
+                        BWD_CHECK: begin
+                            // Backward pass: Check upper triangular part in reverse
+                            if (check_i >= 0 && check_i < 5 && !validation_invalid) begin
+                                if (check_j > check_i) begin
+                                    if (request_matrix[check_i][check_j]) begin
+                                        validation_invalid <= check_pg_connection(check_i, check_j);
+                                    end
+                                    check_j <= check_j - 1;
+                                end else begin
+                                    check_j <= 5;
+                                    check_i <= check_i - 1;
+                                end
+                            end else begin
+                                validate_state <= CHECK_COMPLETE;
+                            end
+                        end
+
+                        CHECK_COMPLETE: begin
+                            sif.invalid_request <= validation_invalid;
+                            
+                            if (!validation_invalid) begin
+                                // Process output requests from matrix diagonal
+                                for (int i = 0; i < 6; i++) begin
+                                    if (request_matrix[i][i]) begin
+                                        pending_command[get_output_idx(i)] = 1'b1;
+                                    end else begin
+                                        pending_command[get_output_idx(i)] = 1'b0;
+                                    end
+                                end
+
+                                // Process interlink requests from upper triangle
+                                for (int i = 0; i < 5; i++) begin
+                                    for (int j = i + 1; j < 6; j++) begin
+                                        if (request_matrix[i][j]) begin
+                                            pending_command[get_interlink_idx(i, j)] = 1'b1;
+                                        end else begin
+                                            pending_command[get_interlink_idx(i, j)] = 1'b0;
+                                        end
+                                    end
+                                end
+                                contactor_commanded <= pending_command;
+                            end
+                            
+                            // Move to feedback wait state
+                            feedback_timeout_counter <= '0;
+                            current_state <= WAIT_FEEDBACK;
+                        end
+                    endcase
                 end
 
                 WAIT_FEEDBACK: begin
@@ -424,9 +529,10 @@ module SafetyBoard_tb;
         $display("\nCurrent State at time %0t:", $time);
         $display("State: %s", 
             sif.current_state == 3'b000 ? "IDLE" :
-            sif.current_state == 3'b001 ? "WAIT_FEEDBACK" :
-            sif.current_state == 3'b010 ? "FEEDBACK_ERROR" :
-            sif.current_state == 3'b011 ? "COMMAND_READY" : "UNKNOWN"
+            sif.current_state == 3'b001 ? "VALIDATE_REQ" :
+            sif.current_state == 3'b010 ? "WAIT_FEEDBACK" :
+            sif.current_state == 3'b011 ? "FEEDBACK_ERROR" :
+            sif.current_state == 3'b100 ? "COMMAND_READY" : "UNKNOWN"
         );
         $display("Default Connections: %b", sif.output_requests);
         $display("Interlink Request [0][1]: %b", sif.interlink_req_dist1[0]);

@@ -38,7 +38,7 @@
 
 
 set_global_assignment -name FAMILY "MAX 10"
-set_global_assignment -name DEVICE 10M08SAM153I7G
+set_global_assignment -name DEVICE 10M08SAU169I7G
 set_global_assignment -name TOP_LEVEL_ENTITY SafetyBoard
 set_global_assignment -name ORIGINAL_QUARTUS_VERSION 23.1STD.1
 set_global_assignment -name PROJECT_CREATION_TIME_DATE "10:28:25  DECEMBER 23, 2024"
