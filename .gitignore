@@ -1,0 +1,27 @@
+# Quartus generated folders
+/db/
+/incremental_db/
+/output_files/
+/simulation/questa/gate_work/
+
+# Additional Quartus files to ignore
+*.rpt
+*.summary
+*.smsg
+*.done
+*.jdi
+*.pin
+*.sof
+*.pof
+*.qws
+*.sld
+*.qdf
+*.cdf
+*.do.bak*
+
+# ModelSim generated files
+*.wlf
+*.vcd
+transcript
+work/
+vsim.wlf
