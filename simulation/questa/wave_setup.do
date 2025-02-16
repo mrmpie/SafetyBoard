@@ -2,14 +2,9 @@ onerror {resume}
 quietly WaveActivateNextPane {} 0
 add wave -noupdate /SafetyBoard_tb/sif/clk
 add wave -noupdate /SafetyBoard_tb/sif/rst_n
-add wave -noupdate -expand -group Input /SafetyBoard_tb/sif/output_requests
-add wave -noupdate -expand -group Input /SafetyBoard_tb/sif/interlink_req_dist1
-add wave -noupdate -expand -group Input /SafetyBoard_tb/sif/interlink_req_dist2
-add wave -noupdate -expand -group Input /SafetyBoard_tb/sif/interlink_req_dist3
-add wave -noupdate -expand -group Input /SafetyBoard_tb/sif/interlink_req_dist4
-add wave -noupdate -expand -group Input /SafetyBoard_tb/sif/interlink_req_dist5
 add wave -noupdate -expand -group Input /SafetyBoard_tb/sif/shutdown_commands
 add wave -noupdate -expand -group Input /SafetyBoard_tb/sif/router_feedback
+add wave -noupdate -expand -group Input /SafetyBoard_tb/sif/requests
 add wave -noupdate -expand -group Status /SafetyBoard_tb/sif/validate_state
 add wave -noupdate -expand -group Status /SafetyBoard_tb/sif/feedback_timeout_error
 add wave -noupdate -expand -group Status /SafetyBoard_tb/sif/invalid_request
