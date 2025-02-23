@@ -17,7 +17,7 @@
 // PROGRAM "Quartus Prime"
 // VERSION "Version 23.1std.1 Build 993 05/14/2024 SC Lite Edition"
 
-// DATE "02/16/2025 20:55:55"
+// DATE "02/23/2025 09:35:29"
 
 // 
 // Device: Altera 10M08SAU169I7G Package UFBGA169
@@ -41,17 +41,17 @@ module SafetyBoard (
 	\sif.feedback_timeout_error ,
 	\sif.invalid_request ,
 	\sif.router_cmd );
-inout 	[5:0] \sif.shutdown_commands ;
-inout 	\sif.rst_n ;
-inout 	\sif.clk ;
-inout 	[41:0] \sif.router_feedback ;
-inout 	[20:0] \sif.requests ;
-inout 	[5:0] \sif.pg_shutdown ;
-inout 	[2:0] \sif.validate_state ;
-inout 	[2:0] \sif.current_state ;
-inout 	\sif.feedback_timeout_error ;
-inout 	\sif.invalid_request ;
-inout 	[20:0] \sif.router_cmd ;
+output 	[5:0] \sif.shutdown_commands ;
+output 	\sif.rst_n ;
+output 	\sif.clk ;
+output 	[41:0] \sif.router_feedback ;
+output 	[20:0] \sif.requests ;
+output 	[5:0] \sif.pg_shutdown ;
+output 	[2:0] \sif.validate_state ;
+output 	[2:0] \sif.current_state ;
+output 	\sif.feedback_timeout_error ;
+output 	\sif.invalid_request ;
+output 	[20:0] \sif.router_cmd ;
 
 // Design Ports Information
 // sif.pg_shutdown[0]	=>  Location: PIN_F13,	 I/O Standard: 2.5 V,	 Current Strength: Default
