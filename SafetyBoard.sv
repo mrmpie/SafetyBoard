@@ -1,64 +1,10 @@
-package safety_pkg;
-    typedef enum logic [1:0] {
-        OPEN = 2'b00,
-        CLOSED = 2'b01,
-        ERROR = 2'b11
-    } contactor_state_t;
-endpackage
-
-interface SafetyBoardInterface;
-    // Request and command signals - 21 bits total:
-    // [5:0]   - Output connection requests (diagonal of the matrix)
-    // [20:6]  - Interlink requests in order of:
-    //           - 5 bits for distance 1 (PG0-PG1, PG1-PG2, PG2-PG3, PG3-PG4, PG4-PG5)
-    //           - 4 bits for distance 2 (PG0-PG2, PG1-PG3, PG2-PG4, PG3-PG5)
-    //           - 3 bits for distance 3 (PG0-PG3, PG1-PG4, PG2-PG5)
-    //           - 2 bits for distance 4 (PG0-PG4, PG1-PG5)
-    //           - 1 bit  for distance 5 (PG0-PG5)
-    logic [20:0] requests;          // Connection requests
-    logic [20:0] router_cmd;        // Command to power routers (same for plus and minus)
-    
-    // Feedback from power routers - 2 feedback signals per connection
-    logic [41:0] router_feedback;   // 2 feedback bits per router command bit
-    
-    // Control signals
-    logic clk;
-    logic rst_n;
-    
-    // Status signals
-    logic invalid_request;          // Indicates unsafe interlink request
-    logic feedback_timeout_error;   // Indicates feedback timeout occurred
-    
-    // Debug signals
-    logic [2:0] current_state;      // Current state of the state machine
-    logic [2:0] validate_state;     // Current state of the validation state machine
-    
-    // New signals
-    logic [5:0] shutdown_commands;  // From outputs to safety board
-    logic [5:0] pg_shutdown;        // From safety board to power groups
-    
-    modport SafetyBoard (
-        input  clk, rst_n, requests, router_feedback,
-        output router_cmd, invalid_request, feedback_timeout_error, 
-               current_state, validate_state,
-        input  shutdown_commands,
-        output pg_shutdown
-    );
-
-    modport Test (
-        output clk, rst_n, requests, router_feedback,
-        input  router_cmd, invalid_request, feedback_timeout_error,
-              current_state, validate_state,
-        output shutdown_commands,
-        input  pg_shutdown
-    );
-endinterface
-
 module SafetyBoard #(
     parameter int FEEDBACK_TIMEOUT_CYCLES = 100
 )(
-    SafetyBoardInterface sif
+    SafetyBoardInterface.SafetyBoard sif
 );
+    import spi_pkg::*;
+
     // State machine states
     typedef enum logic [2:0] {
         IDLE          = 3'b000,
@@ -93,11 +39,56 @@ module SafetyBoard #(
     logic [20:0] pending_command;
     logic [20:0] captured_requests;  // Store requests at start of validation
 
-    
     // Array to store output assignments for each PG (0 = no output, 1-6 = connected to that output)
     int pg_output_assignments[6];      // Used for validating new requests
     int pg_output_assignments_current[6];  // Used for shutdown logic, reflects current valid state
-    
+
+    // Internal signals for SPI interface
+    logic [20:0] spi_requests;
+    logic [5:0]  spi_shutdown_cmd;
+    logic [5:0]  spi_pg_shutdown;
+    control_reg_t spi_control;
+    control_reg_t control_reg;
+    status_reg_t  status;
+
+    // Status register assignment
+    assign status.feedback_timeout_error = sif.feedback_timeout_error;
+    assign status.invalid_request = sif.invalid_request;
+    assign status.reserved = '0;
+
+    // Combined reset signal
+    logic combined_rst_n;
+    assign combined_rst_n = sif.rst_n & spi_control.spi_rst_n;  // Both hardware and SPI reset
+
+    // Instantiate SPI slave
+    spi_slave #(
+        .WORD_LENGTH(`SPI_WORD_LENGTH)
+    ) spi_inst (
+        .sclk(sif.spi_sclk),
+        .cs_n(sif.spi_cs_n),
+        .mosi(sif.spi_mosi),
+        .miso(sif.spi_miso),
+        .rst_n(combined_rst_n),
+        .spi_requests(spi_requests),
+        .contactor_status(contactor_commanded),
+        .router_feedback(sif.router_feedback),
+        .status(status),
+        .control(control_reg),
+        .control_out(spi_control),
+        .spi_shutdown_cmd(spi_shutdown_cmd),
+        .shutdown_status(sif.shutdown_commands),
+        .spi_pg_shutdown(spi_pg_shutdown)
+    );
+
+    // Generate SPI reset from control register
+    always_ff @(posedge sif.clk or negedge sif.rst_n) begin
+        if (!sif.rst_n) begin
+            spi_control.spi_rst_n <= 1'b1;
+        end else begin
+            spi_control.spi_rst_n <= ~spi_control.reset_req;  // Active low reset
+        end
+    end
+
     // Helper function to check and propagate output assignments between two PGs
     function automatic logic check_pg_connection(int pg1, int pg2);
         logic is_invalid = 1'b0;
@@ -117,56 +108,24 @@ module SafetyBoard #(
         
         return is_invalid;
     endfunction
-    
-    function automatic logic check_invalid_request();
-        logic invalid = 1'b0;
-        
-        // Initialize array
-        for (int i = 0; i < 6; i++) begin
-            pg_output_assignments[i] = 0;
-            if (request_matrix[i][i]) begin
-                pg_output_assignments[i] = i + 1;
+
+    // Helper function to check feedback for a specific connection
+    function automatic logic check_connection_feedback(int index);
+        return (sif.router_feedback[2*index +: 2] == {contactor_commanded[index], contactor_commanded[index]});
+    endfunction
+
+    // Helper function to check all feedback matches commands
+    function automatic logic check_all_feedback();
+        logic all_match = 1'b1;
+        for (int i = 0; i < 21; i++) begin
+            if (!check_connection_feedback(i)) begin
+                all_match = 1'b0;
+                break;
             end
         end
-        
-        // Forward pass: Check upper triangular part
-        for (int i = 0; i < 5 && !invalid; i++) begin
-            for (int j = i + 1; j < 6 && !invalid; j++) begin
-                if (request_matrix[i][j]) begin
-                    invalid = check_pg_connection(i, j);
-                end
-            end
-        end
-        
-        // Backward pass: Check upper triangular part in reverse
-        for (int i = 4; i >= 0 && !invalid; i--) begin
-            for (int j = 5; j > i && !invalid; j--) begin
-                if (request_matrix[i][j]) begin
-                    invalid = check_pg_connection(i, j);
-                end
-            end
-        end
-        
-        return invalid;
+        return all_match;
     endfunction
     
-    // Combinatorial logic for shutdown mapping using the pg_output_assignments
-    always_comb begin
-        sif.pg_shutdown = '0;
-        
-        // For each PG
-        for (int pg = 0; pg < 6; pg++) begin
-            // If this PG is mapped to an output (value 1-6)
-            if (pg_output_assignments_current[pg] != 0) begin
-                // Check if that output is requesting shutdown
-                // Subtract 1 because array is 0-5 but assignments are 1-6
-                if (sif.shutdown_commands[pg_output_assignments_current[pg] - 1]) begin
-                    sif.pg_shutdown[pg] = 1'b1;
-                end
-            end
-        end
-    end
-
     // Helper function to set symmetric matrix entries
     function automatic void set_matrix_entry(int i, int j, logic value);
         request_matrix[i][j] = value;
@@ -185,19 +144,6 @@ module SafetyBoard #(
         end
         // Add offset within this distance group
         return start_idx + i;
-    endfunction
-
-    // Helper function to set interlink entries based on distance array
-    function automatic void set_interlink_entries(int distance, logic [4:0] req_array);
-        int max_idx = 6 - distance;  // Number of connections for this distance
-        for (int i = 0; i < max_idx; i++) begin
-            set_matrix_entry(i, i + distance, req_array[i]);
-        end
-    endfunction
-    
-    // Helper function to get output index
-    function automatic int get_output_idx(int group);
-        return group;  // Direct mapping for outputs
     endfunction
 
     // Build request matrix from individual requests
@@ -220,48 +166,58 @@ module SafetyBoard #(
         end
     endfunction
 
-    // Assign current states to interface for debug
-    assign sif.current_state = current_state;
-    assign sif.validate_state = validate_state;
-
-    // Helper function to check feedback for a specific connection
-    function automatic logic check_connection_feedback(int index);
-        return (sif.router_feedback[2*index +: 2] == {contactor_commanded[index], contactor_commanded[index]});
-    endfunction
-
-    // Helper function to check all feedback matches commands
-    function automatic logic check_all_feedback();
-        logic all_match = 1'b1;
-        for (int i = 0; i < 21; i++) begin
-            if (!check_connection_feedback(i)) begin
-                all_match = 1'b0;
-                break;
+    // Combinatorial logic for shutdown mapping using the pg_output_assignments
+    always_comb begin
+        sif.pg_shutdown = '0;
+        
+        // For each PG
+        for (int pg = 0; pg < 6; pg++) begin
+            // If this PG is mapped to an output (value 1-6)
+            if (pg_output_assignments_current[pg] != 0) begin
+                // Check if that output is requesting shutdown from either interface
+                // Subtract 1 because array is 0-5 but assignments are 1-6
+                if (sif.shutdown_commands[pg_output_assignments_current[pg] - 1] || 
+                    spi_shutdown_cmd[pg_output_assignments_current[pg] - 1]) begin
+                    sif.pg_shutdown[pg] = 1'b1;
+                end
             end
         end
-        return all_match;
-    endfunction
 
+        // Add direct PG shutdown from SPI
+        sif.pg_shutdown = sif.pg_shutdown | spi_pg_shutdown;
+    end
 
     // Main control logic
-    always_ff @(posedge sif.clk or negedge sif.rst_n) begin
-        if (!sif.rst_n) begin
+    always_ff @(posedge sif.clk or negedge combined_rst_n) begin
+        if (!combined_rst_n) begin
             contactor_commanded <= '0;
             sif.invalid_request <= '0;
             sif.feedback_timeout_error <= '0;
             feedback_timeout_counter <= '0;
-            pending_command <= '0;
-            request_matrix <= '0;
-            current_state <= IDLE;
-            validate_state <= INIT_CHECK;
+            for (int i = 0; i < 6; i++) begin
+                pg_output_assignments[i] = 0;
+                pg_output_assignments_current[i] = 0;
+            end
             check_i <= '0;
             check_j <= '0;
             validation_invalid <= '0;
             captured_requests <= '0;
+            pending_command <= '0;
+            request_matrix <= '0;
+            current_state <= IDLE;
+            validate_state <= INIT_CHECK;
+            control_reg <= '0;
         end else begin
+            // Clear errors if requested through SPI
+            if (spi_control.clear_errors) begin
+                sif.feedback_timeout_error <= '0;
+                sif.invalid_request <= '0;
+            end
+
             case (current_state)
                 IDLE: begin
-                    // Only capture requests in IDLE
-                    captured_requests <= sif.requests;
+                    // Capture requests from both direct and SPI interfaces
+                    captured_requests <= sif.requests | spi_requests;
                     current_state <= BUILD_MATRIX;
                 end
 
@@ -412,98 +368,171 @@ endmodule
 
 // Basic testbench
 module SafetyBoard_tb;
-    // Clock generation - 250ns period (4MHz)
-    logic clk = 0;
-    always #125 clk = ~clk;  // 125ns high, 125ns low = 250ns period
+    import spi_pkg::*;
 
+    // Clock generation - 250ns period (4MHz)
+    localparam CLK_PERIOD = 250;
+    
     // Interface instance
     SafetyBoardInterface sif();
     
-    // DUT instantiation
-    SafetyBoard dut (
-        .sif(sif.SafetyBoard)
-    );
-
-    // Connect clock to interface
-    assign sif.clk = clk;
-
+    // Clock generation
+    initial begin
+        sif.clk = 0;
+        forever #(CLK_PERIOD/2) sif.clk = ~sif.clk;
+    end
+    
+    // SPI clock generation (1MHz)
+    localparam SPI_CLK_PERIOD = 1000;
+    initial begin
+        sif.spi_sclk = 0;
+        forever #(SPI_CLK_PERIOD/2) sif.spi_sclk = ~sif.spi_sclk;
+    end
+    
+    // DUT instance
+    SafetyBoard dut(sif.SafetyBoard);
+    
     // Test stimulus
     initial begin
-        // Initialize
+        // Initialize signals
         sif.rst_n = 0;
         sif.requests = '0;
         sif.router_feedback = '0;
+        sif.shutdown_commands = '0;
+        sif.spi_cs_n = 1;
+        sif.spi_mosi = 0;
         
-        // Hold reset for 1us (4 clock cycles)
-        #1000 sif.rst_n = 1;
+        // Reset
+        #(CLK_PERIOD*10);
+        sif.rst_n = 1;
+        #(CLK_PERIOD*10);
         
-        // Wait a few clocks
-        @(posedge clk);
-        @(posedge clk);
+        // Test 1: Basic Connection Test
+        $display("\nTest 1: Basic Connection Test");
+        sif.requests[0] = 1'b1;  // Request PG0 output
+        #(CLK_PERIOD*10);
         
-        // Enable default connection for Power Group 1 (index 0)
-        sif.requests[0] = 1'b1;  // PG1 = index 0
+        // Add feedback
+        sif.router_feedback[1:0] = 2'b11;  // Feedback for PG0
+        #(CLK_PERIOD*10);
         
-        @(posedge clk);
+        // Test 2: SPI Connection Request
+        $display("\nTest 2: SPI Connection Request");
+        spi_write(CMD_WRITE_CONTACTOR, 21'h000002);  // Request PG1 output
+        #(CLK_PERIOD*10);
         
-        // Enable default connection for Power Group 2 (index 1)
-        sif.requests[1] = 1'b0;  // PG2 = index 1
+        // Add feedback
+        sif.router_feedback[3:2] = 2'b11;  // Feedback for PG1
+        #(CLK_PERIOD*10);
         
-        @(posedge clk);
+        // Test 3: Read Status Register
+        $display("\nTest 3: Read Status Register");
+        spi_read(CMD_READ_STATUS);
+        #(CLK_PERIOD*10);
         
-        // Request interlink between PG1 and PG3 (index 0 and 2)
-        sif.requests[6] = 1'b1;  // Connect PG1 (0) to PG3 (2)
+        // Test 4: Shutdown Command Test
+        $display("\nTest 4: Shutdown Command Test");
+        sif.shutdown_commands[0] = 1'b1;  // Direct shutdown for PG0
+        #(CLK_PERIOD*10);
         
-        // Monitor outputs
-        @(posedge clk);
-        $display("Time=%0t Router_cmd=%b", $time, sif.router_cmd);
-        $display("Time=%0t Invalid_request=%b", $time, sif.invalid_request);
-        $display("Time=%0t Feedback_timeout=%b", $time, sif.feedback_timeout_error);
+        // Test 5: SPI Shutdown Command
+        $display("\nTest 5: SPI Shutdown Command");
+        spi_write(CMD_WRITE_SHUTDOWN, {26'b0, 6'h02});  // SPI shutdown for PG1
+        #(CLK_PERIOD*10);
         
-        // Add feedback - each bit duplicated for the 2-bit feedback
-        for (int i = 0; i < 21; i++) begin
-            sif.router_feedback[2*i +: 2] = {sif.router_cmd[i], sif.router_cmd[i]};
-        end
+        // Test 6: Read Shutdown Status
+        $display("\nTest 6: Read Shutdown Status");
+        spi_read(CMD_READ_SHUTDOWN);
+        #(CLK_PERIOD*10);
         
-        // Wait a few clocks and check the state
-        repeat(5) @(posedge clk);
+        // Test 7: Error Injection and Clearing
+        $display("\nTest 7: Error Injection and Clearing");
+        // Force a feedback timeout
+        sif.router_feedback = '0;
+        #(CLK_PERIOD*200);  // Wait for timeout
         
-        // Display final state
-        $display("\nFinal State:");
-        $display("Router_cmd=%b", sif.router_cmd);
-        $display("Invalid_request=%b", sif.invalid_request);
-        $display("Feedback Timeout Error: %b", sif.feedback_timeout_error);
+        // Read status
+        spi_read(CMD_READ_STATUS);
+        #(CLK_PERIOD*10);
         
-        // Run for a few more microseconds
-        #5000;
+        // Clear errors via SPI
+        spi_write(CMD_WRITE_CONTROL, {24'b0, 8'h01});  // Set clear_errors bit
+        #(CLK_PERIOD*10);
         
-        // End simulation
+        // Read status again
+        spi_read(CMD_READ_STATUS);
+        #(CLK_PERIOD*10);
+        
         $finish;
     end
-
-    // Optional: Waveform dumping
-    initial begin
-        $dumpfile("SafetyBoard.vcd");
-        $dumpvars(0, SafetyBoard_tb);
-    end
-
-    // Helper task to display the current state
-    task display_state;
-        $display("\nCurrent State at time %0t:", $time);
-        $display("State: %s", 
+    
+    // Task to perform SPI write
+    task automatic spi_write(input logic [7:0] cmd, input logic [31:0] data);
+        logic [31:0] word = {data[30:0], 1'b0};  // Shift data left by 1 for first bit
+        
+        // Start transaction
+        @(posedge sif.spi_sclk);
+        sif.spi_cs_n = 0;
+        
+        // Send command byte
+        for (int i = 0; i < 8; i++) begin
+            @(negedge sif.spi_sclk);
+            sif.spi_mosi = cmd[7-i];
+        end
+        
+        // Send data
+        for (int i = 0; i < `SPI_WORD_LENGTH-8; i++) begin
+            @(negedge sif.spi_sclk);
+            sif.spi_mosi = word[(`SPI_WORD_LENGTH-9)-i];
+        end
+        
+        // End transaction
+        @(posedge sif.spi_sclk);
+        sif.spi_cs_n = 1;
+    endtask
+    
+    // Task to perform SPI read
+    task automatic spi_read(input logic [7:0] cmd);
+        logic [31:0] read_data;
+        
+        // Start transaction
+        @(posedge sif.spi_sclk);
+        sif.spi_cs_n = 0;
+        
+        // Send command byte
+        for (int i = 0; i < 8; i++) begin
+            @(negedge sif.spi_sclk);
+            sif.spi_mosi = cmd[7-i];
+        end
+        
+        // Read data
+        for (int i = 0; i < `SPI_WORD_LENGTH-8; i++) begin
+            @(posedge sif.spi_sclk);
+            read_data[(`SPI_WORD_LENGTH-9)-i] = sif.spi_miso;
+        end
+        
+        // End transaction
+        @(posedge sif.spi_sclk);
+        sif.spi_cs_n = 1;
+        
+        // Display read data
+        $display("SPI Read: cmd=0x%h, data=0x%h", cmd, read_data);
+    endtask
+    
+    // Monitor for displaying state changes
+    always @(sif.current_state) begin
+        $display("\nState Change at time %0t:", $time);
+        $display("Current State: %s", 
             sif.current_state == 3'b000 ? "IDLE" :
             sif.current_state == 3'b001 ? "BUILD_MATRIX" :
             sif.current_state == 3'b010 ? "VALIDATE_REQ" :
             sif.current_state == 3'b011 ? "WAIT_FEEDBACK" :
             sif.current_state == 3'b100 ? "FEEDBACK_ERROR" :
-            sif.current_state == 3'b101 ? "COMMAND_READY" : "UNKNOWN"
-        );
-        $display("Default Connections: %b", sif.requests[5:0]);
-        $display("Interlink Request [0][1]: %b", sif.requests[6]);
-        $display("Router Cmd: %b", sif.router_cmd);
+            sif.current_state == 3'b101 ? "COMMAND_READY" : "UNKNOWN");
+        $display("Router Command: %b", sif.router_cmd);
         $display("Invalid Request: %b", sif.invalid_request);
         $display("Feedback Timeout Error: %b", sif.feedback_timeout_error);
-        $display("----------------------------------------");
-    endtask
+        $display("PG Shutdown Status: %b", sif.pg_shutdown);
+    end
 
 endmodule
