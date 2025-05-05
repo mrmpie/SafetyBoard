@@ -18,6 +18,8 @@
 *.qdf
 *.cdf
 *.do.bak*
+*.jam
+*.jbc
 
 # ModelSim generated files
 *.wlf
