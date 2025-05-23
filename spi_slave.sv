@@ -148,6 +148,9 @@ module spi_slave #(
     logic [7:0] read_data;
     always_comb begin
         case (cmd_reg)
+            CMD_VERSION: begin
+                read_data = 8'h42; // FPGA version byte
+            end
             CMD_READ_CONTACTOR: begin
                 read_data = addr_reg < 21 ? {7'b0, contactor_status[addr_reg]} : 8'b0;
             end

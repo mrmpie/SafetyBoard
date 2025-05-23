@@ -4,6 +4,7 @@ package spi_pkg;
 
     // SPI Commands
     typedef enum logic [7:0] {
+        CMD_VERSION           = 8'h00,  // Get FPGA version
         // Read commands
         CMD_READ_CONTACTOR    = 8'h01,  // Read contactor status at index
         CMD_READ_FEEDBACK     = 8'h02,  // Read feedback at index
