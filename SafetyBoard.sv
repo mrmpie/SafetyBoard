@@ -1,7 +1,61 @@
+interface SafetyBoardInterface;
+    // Request and command signals - 21 bits total:
+    // [5:0]   - Output connection requests (diagonal of the matrix)
+    // [20:6]  - Interlink requests in order of:
+    //           - 5 bits for distance 1 (PG0-PG1, PG1-PG2, PG2-PG3, PG3-PG4, PG4-PG5)
+    //           - 4 bits for distance 2 (PG0-PG2, PG1-PG3, PG2-PG4, PG3-PG5)
+    //           - 3 bits for distance 3 (PG0-PG3, PG1-PG4, PG2-PG5)
+    //           - 2 bits for distance 4 (PG0-PG4, PG1-PG5)
+    //           - 1 bit  for distance 5 (PG0-PG5)
+    logic [20:0] requests;          // Connection requests
+    logic [20:0] router_cmd;        // Command to power routers (same for plus and minus)
+    
+    // Feedback from power routers - 2 feedback signals per connection
+    logic [41:0] router_feedback;   // 2 feedback bits per router command bit
+    
+    // Control signals
+    logic clk;
+    logic rst_n;
+
+    // SPI signals
+    logic spi_mosi;
+    logic spi_miso;
+    logic spi_sclk;
+    logic spi_cs_n;
+    
+    // Status signals
+    logic invalid_request;          // Indicates unsafe interlink request
+    logic feedback_timeout_error;   // Indicates feedback timeout occurred
+    
+    // Debug signals
+    logic [2:0] current_state;      // Current state of the state machine
+    logic [2:0] validate_state;     // Current state of the validation state machine
+    
+    // New signals
+    logic [5:0] shutdown_commands;  // From outputs to safety board
+    logic [5:0] pg_shutdown;        // From safety board to power groups
+    
+    modport SafetyBoard (
+        input  clk, rst_n, requests, router_feedback, spi_mosi, spi_sclk, spi_cs_n,
+        output router_cmd, invalid_request, feedback_timeout_error, 
+               current_state, validate_state, spi_miso,
+        input  shutdown_commands,
+        output pg_shutdown
+    );
+
+    modport Test (
+        output clk, rst_n, requests, router_feedback, spi_mosi, spi_sclk, spi_cs_n,
+        input  router_cmd, invalid_request, feedback_timeout_error,
+              current_state, validate_state, spi_miso,
+        output shutdown_commands,
+        input  pg_shutdown
+    );
+endinterface
+
 module SafetyBoard #(
     parameter int FEEDBACK_TIMEOUT_CYCLES = 100
 )(
-    SafetyBoardInterface.SafetyBoard sif
+    SafetyBoardInterface sif
 );
     import spi_pkg::*;
 
@@ -38,6 +92,7 @@ module SafetyBoard #(
     logic [$clog2(FEEDBACK_TIMEOUT_CYCLES):0] feedback_timeout_counter;
     logic [20:0] pending_command;
     logic [20:0] captured_requests;  // Store requests at start of validation
+    
 
     // Array to store output assignments for each PG (0 = no output, 1-6 = connected to that output)
     int pg_output_assignments[6];      // Used for validating new requests
@@ -56,16 +111,12 @@ module SafetyBoard #(
     assign status.invalid_request = sif.invalid_request;
     assign status.reserved = '0;
 
-    // Combined reset signal
-    logic combined_rst_n;
-    assign combined_rst_n = sif.rst_n & spi_control.spi_rst_n;  // Both hardware and SPI reset
-
     // Instantiate SPI slave
     spi_slave #(
         .WORD_LENGTH(`SPI_WORD_LENGTH)
     ) spi_inst (
         .sclk(sif.spi_sclk),
-        .cs_n(sif.spi_cs_n),
+        .cs_n(),
         .mosi(sif.spi_mosi),
         .miso(sif.spi_miso),
         .rst_n(combined_rst_n),
@@ -80,14 +131,9 @@ module SafetyBoard #(
         .spi_pg_shutdown(spi_pg_shutdown)
     );
 
-    // Generate SPI reset from control register
-    always_ff @(posedge sif.clk or negedge sif.rst_n) begin
-        if (!sif.rst_n) begin
-            spi_control.spi_rst_n <= 1'b1;
-        end else begin
-            spi_control.spi_rst_n <= ~spi_control.reset_req;  // Active low reset
-        end
-    end
+    // Combined reset signal
+    logic combined_rst_n;
+    assign combined_rst_n = sif.rst_n & spi_control.reset_req;  // Both hardware and SPI reset
 
     // Helper function to check and propagate output assignments between two PGs
     function automatic logic check_pg_connection(int pg1, int pg2);
@@ -109,23 +155,38 @@ module SafetyBoard #(
         return is_invalid;
     endfunction
 
-    // Helper function to check feedback for a specific connection
-    function automatic logic check_connection_feedback(int index);
-        return (sif.router_feedback[2*index +: 2] == {contactor_commanded[index], contactor_commanded[index]});
-    endfunction
-
-    // Helper function to check all feedback matches commands
-    function automatic logic check_all_feedback();
-        logic all_match = 1'b1;
-        for (int i = 0; i < 21; i++) begin
-            if (!check_connection_feedback(i)) begin
-                all_match = 1'b0;
-                break;
+    function automatic logic check_invalid_request();
+        logic invalid = 1'b0;
+        
+        // Initialize array
+        for (int i = 0; i < 6; i++) begin
+            pg_output_assignments[i] = 0;
+            if (request_matrix[i][i]) begin
+                pg_output_assignments[i] = i + 1;
             end
         end
-        return all_match;
+        
+        // Forward pass: Check upper triangular part
+        for (int i = 0; i < 5 && !invalid; i++) begin
+            for (int j = i + 1; j < 6 && !invalid; j++) begin
+                if (request_matrix[i][j]) begin
+                    invalid = check_pg_connection(i, j);
+                end
+            end
+        end
+        
+        // Backward pass: Check upper triangular part in reverse
+        for (int i = 4; i >= 0 && !invalid; i--) begin
+            for (int j = 5; j > i && !invalid; j--) begin
+                if (request_matrix[i][j]) begin
+                    invalid = check_pg_connection(i, j);
+                end
+            end
+        end
+        
+        return invalid;
     endfunction
-    
+
     // Helper function to set symmetric matrix entries
     function automatic void set_matrix_entry(int i, int j, logic value);
         request_matrix[i][j] = value;
@@ -166,6 +227,26 @@ module SafetyBoard #(
         end
     endfunction
 
+        // Assign current states to interface for debug
+    assign sif.current_state = current_state;
+    assign sif.validate_state = validate_state;
+
+    // Helper function to check feedback for a specific connection
+    function automatic logic check_connection_feedback(int index);
+        return (sif.router_feedback[2*index +: 2] == {contactor_commanded[index], contactor_commanded[index]});
+    endfunction
+
+    // Helper function to check all feedback matches commands
+    function automatic logic check_all_feedback();
+        logic all_match = 1'b1;
+        for (int i = 0; i < 21; i++) begin
+            if (!check_connection_feedback(i)) begin
+                all_match = 1'b0;
+                break;
+            end
+        end
+        return all_match;
+    endfunction
     // Combinatorial logic for shutdown mapping using the pg_output_assignments
     always_comb begin
         sif.pg_shutdown = '0;

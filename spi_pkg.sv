@@ -21,7 +21,8 @@ package spi_pkg;
     typedef struct packed {
         logic feedback_timeout_error;
         logic invalid_request;
-        logic [5:0] reserved;
+        logic thermal_shutdown[1:0];
+        logic [3:0] reserved;
     } status_reg_t;
 
     // Control register

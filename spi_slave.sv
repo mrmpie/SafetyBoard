@@ -155,10 +155,14 @@ module spi_slave #(
                 read_data = addr_reg < 21 ? {6'b0, router_feedback[2*addr_reg +: 2]} : 8'b0;
             end
             CMD_READ_STATUS: begin
-                read_data = {5'b0, status.reserved[0], status.invalid_request, status.feedback_timeout_error};
+                read_data = {status.reserved[3:0], status.thermal_shutdown[1:0], status.invalid_request, status.feedback_timeout_error};
             end
             CMD_READ_SHUTDOWN: begin
                 read_data = addr_reg < 6 ? {7'b0, shutdown_status[addr_reg]} : 8'b0;
+            end
+            CMD_READ_CONTROL: begin
+                // Pack control register fields into a byte (customize as needed)
+                read_data = {control_reg.reserved[3:0], control_reg.clear_errors, control_reg.reset_req, 2'b0};
             end
             default: read_data = 8'b0;
         endcase
