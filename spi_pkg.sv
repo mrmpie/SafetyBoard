@@ -9,6 +9,7 @@ package spi_pkg;
         CMD_READ_FEEDBACK     = 8'h02,  // Read feedback at index
         CMD_READ_STATUS       = 8'h03,  // Read status register
         CMD_READ_SHUTDOWN     = 8'h04,  // Read shutdown status
+        CMD_READ_CONTROL      = 8'h05,  // Read control register
 
         // Write commands
         CMD_WRITE_CONTACTOR   = 8'h81,  // Write contactor command at index
@@ -21,7 +22,7 @@ package spi_pkg;
     typedef struct packed {
         logic feedback_timeout_error;
         logic invalid_request;
-        logic thermal_shutdown[1:0];
+        logic [1:0] thermal_shutdown;
         logic [3:0] reserved;
     } status_reg_t;
 

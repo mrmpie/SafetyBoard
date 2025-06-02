@@ -162,7 +162,7 @@ module spi_slave #(
             end
             CMD_READ_CONTROL: begin
                 // Pack control register fields into a byte (customize as needed)
-                read_data = {control_reg.reserved[3:0], control_reg.clear_errors, control_reg.reset_req, 2'b0};
+                read_data = {control.reserved[3:0], control.clear_errors, control.reset_req, 2'b0};
             end
             default: read_data = 8'b0;
         endcase

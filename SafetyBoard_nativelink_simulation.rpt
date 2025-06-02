@@ -24,7 +24,7 @@ Questa Intel FPGA Info: # ** License Issue: License request for intelqsimstarter
 Questa Intel FPGA Info: # ** License Issue: Cannot checkout an uncounted license within a Windows Terminal Services guest session. (C:\flexlm\LR-210132_License.dat)
 Questa Intel FPGA Error: # ** Error: Failure to checkout 'intelqsimstarter' license feature.
 Questa Intel FPGA Info: # Unable to checkout a viewer license necessary for use of the Questa Intel Starter FPGA Edition graphical user interface.  Vsim is closing.
-Warning: Ignoring following message with error code CHILDSTATUS 17508 4 while running Questa Intel FPGA Simulation software
+Warning: Ignoring following message with error code CHILDSTATUS 12320 4 while running Questa Intel FPGA Simulation software
 child process exited abnormally
     while executing
 "close $pipe_id"
