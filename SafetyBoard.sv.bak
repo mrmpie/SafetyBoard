@@ -27,16 +27,28 @@ interface SafetyBoardInterface;
     logic invalid_request;          // Indicates unsafe interlink request
     logic feedback_timeout_error;   // Indicates feedback timeout occurred
     
-    // Removed debug and shutdown signals for minimal build
+    // Debug signals
+    //logic [2:0] current_state;      // Current state of the state machine
+    //logic [2:0] validate_state;     // Current state of the validation state machine
+    
+    // New signals
+    //logic [5:0] shutdown_commands;  // From outputs to safety board
+    //logic [5:0] pg_shutdown;        // From safety board to power groups
     
     modport SafetyBoard (
         input  clk, rst_n, requests, router_feedback, spi_mosi, spi_sclk, spi_cs_n,
-        output router_cmd, invalid_request, feedback_timeout_error, spi_miso
+        output router_cmd, invalid_request, feedback_timeout_error, spi_miso,
+               //current_state, validate_state,
+        //input  shutdown_commands,
+        //output pg_shutdown
     );
 
     modport Test (
         output clk, rst_n, requests, router_feedback, spi_mosi, spi_sclk, spi_cs_n,
-        input  router_cmd, invalid_request, feedback_timeout_error, spi_miso
+        input  router_cmd, invalid_request, feedback_timeout_error, spi_miso,
+              //current_state, validate_state,
+        //output shutdown_commands,
+        //input  pg_shutdown
     );
 endinterface
 
@@ -115,8 +127,8 @@ module SafetyBoard #(
         .control(control_reg),
         .control_out(spi_control),
         .spi_shutdown_cmd(spi_shutdown_cmd),
-//        .shutdown_status(sif.shutdown_commands),
-//        .spi_pg_shutdown(spi_pg_shutdown)
+        .shutdown_status(sif.shutdown_commands),
+        .spi_pg_shutdown(spi_pg_shutdown)
     );
 
     // Combined reset signal
@@ -216,8 +228,8 @@ module SafetyBoard #(
     endfunction
 
         // Assign current states to interface for debug
-    // assign sif.current_state = current_state;
-    // assign sif.validate_state = validate_state;
+    assign sif.current_state = current_state;
+    assign sif.validate_state = validate_state;
 
     // Helper function to check feedback for a specific connection
     function automatic logic check_connection_feedback(int index);
@@ -236,22 +248,25 @@ module SafetyBoard #(
         return all_match;
     endfunction
     // Combinatorial logic for shutdown mapping using the pg_output_assignments
-    // always_comb begin
-    //     sif.pg_shutdown = '0;
-    //     // For each PG
-    //     for (int pg = 0; pg < 6; pg++) begin
-    //         if (pg_output_assignments_current[pg] != 0) begin
-    //             if (sif.shutdown_commands[pg_output_assignments_current[pg] - 1] || 
-    //                 spi_shutdown_cmd[pg_output_assignments_current[pg] - 1]) begin
-    //                 sif.pg_shutdown[pg] = 1'b1;
-    //             end
-    //         end
-    //     end
-    // end
+    always_comb begin
+        sif.pg_shutdown = '0;
+        
+        // For each PG
+        for (int pg = 0; pg < 6; pg++) begin
+            // If this PG is mapped to an output (value 1-6)
+            if (pg_output_assignments_current[pg] != 0) begin
+                // Check if that output is requesting shutdown from either interface
+                // Subtract 1 because array is 0-5 but assignments are 1-6
+                if (sif.shutdown_commands[pg_output_assignments_current[pg] - 1] || 
+                    spi_shutdown_cmd[pg_output_assignments_current[pg] - 1]) begin
+                    sif.pg_shutdown[pg] = 1'b1;
+                end
+            end
+        end
 
         // Add direct PG shutdown from SPI
-    //    sif.pg_shutdown = sif.pg_shutdown | spi_pg_shutdown;
-    //end
+        sif.pg_shutdown = sif.pg_shutdown | spi_pg_shutdown;
+    end
 
     // Main control logic
     always_ff @(posedge sif.clk or negedge combined_rst_n) begin
