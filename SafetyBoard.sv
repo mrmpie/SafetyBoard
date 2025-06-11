@@ -104,7 +104,7 @@ module SafetyBoard #(
         .WORD_LENGTH(`SPI_WORD_LENGTH)
     ) spi_inst (
         .sclk(sif.spi_sclk),
-        .cs_n(),
+        .cs_n(sif.spi_cs_n),
         .mosi(sif.spi_mosi),
         .miso(sif.spi_miso),
         .rst_n(combined_rst_n),
@@ -121,7 +121,7 @@ module SafetyBoard #(
 
     // Combined reset signal
     logic combined_rst_n;
-    assign combined_rst_n = sif.rst_n & spi_control.reset_req;  // Both hardware and SPI reset
+    assign combined_rst_n = sif.rst_n & ~spi_control.reset_req;  // Combined reset: active-low if hardware reset (sif.rst_n low) OR SPI reset (spi_control.reset_req high)
 
     // Helper function to check and propagate output assignments between two PGs
     function automatic logic check_pg_connection(int pg1, int pg2);

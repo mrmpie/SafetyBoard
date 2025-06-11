@@ -86,6 +86,10 @@ set_global_assignment -name SYSTEMVERILOG_FILE SafetyBoard.sv
 
 # SPI signals, invalid_request, feedback_timeout_error assignments
 # Primary: IOBANK_2
+set_location_assignment PIN_55 -to sif.spi_mosi
+set_location_assignment PIN_60 -to sif.spi_miso
+set_location_assignment PIN_56 -to sif.spi_sclk
+set_location_assignment PIN_59 -to sif.spi_cs_n
 
 # shutdown_commands[5:0], pg_shutdown[5:0] assignments
 # Primary: IOBANK_5
@@ -93,5 +97,15 @@ set_global_assignment -name SYSTEMVERILOG_FILE SafetyBoard.sv
 # current_state[2:0], validate_state[2:0] assignments
 # Primary: IOBANK_1A/1B
 
+set_location_assignment PIN_27 -to sif.clk
+set_location_assignment PIN_121 -to sif.rst_n
 
+set_global_assignment -name ENABLE_OCT_DONE OFF
+set_global_assignment -name USE_CONFIGURATION_DEVICE ON
+set_global_assignment -name CRC_ERROR_OPEN_DRAIN OFF
+set_global_assignment -name STRATIX_DEVICE_IO_STANDARD "3.3-V LVCMOS"
+set_global_assignment -name OUTPUT_IO_TIMING_NEAR_END_VMEAS "HALF VCCIO" -rise
+set_global_assignment -name OUTPUT_IO_TIMING_NEAR_END_VMEAS "HALF VCCIO" -fall
+set_global_assignment -name OUTPUT_IO_TIMING_FAR_END_VMEAS "HALF SIGNAL SWING" -rise
+set_global_assignment -name OUTPUT_IO_TIMING_FAR_END_VMEAS "HALF SIGNAL SWING" -fall
 set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top
