@@ -16,6 +16,7 @@ interface SafetyBoardInterface;
     // Control signals
     logic clk;
     logic rst_n;
+    logic keep_alive;               // Keep-alive signal, toggles on state changes
 
     // SPI signals
     logic spi_mosi;
@@ -31,12 +32,12 @@ interface SafetyBoardInterface;
     
     modport SafetyBoard (
         input  clk, rst_n, requests, router_feedback, spi_mosi, spi_sclk, spi_cs_n,
-        output router_cmd, invalid_request, feedback_timeout_error, spi_miso
+        output router_cmd, invalid_request, feedback_timeout_error, spi_miso, keep_alive
     );
 
     modport Test (
         output clk, rst_n, requests, router_feedback, spi_mosi, spi_sclk, spi_cs_n,
-        input  router_cmd, invalid_request, feedback_timeout_error, spi_miso
+        input  router_cmd, invalid_request, feedback_timeout_error, spi_miso, keep_alive
     );
 endinterface
 
@@ -69,6 +70,7 @@ module SafetyBoard #(
     // Internal state tracking
     state_t current_state;
     validate_state_t validate_state;
+    state_t prev_state; // Track previous state for keep_alive toggling
     logic [20:0] contactor_commanded;
     logic [5:0][5:0] request_matrix;
     
@@ -273,7 +275,14 @@ module SafetyBoard #(
             current_state <= IDLE;
             validate_state <= INIT_CHECK;
             control_reg <= '0;
+            sif.keep_alive <= 0;
+            prev_state <= IDLE;
         end else begin
+            // Toggle keep_alive on state change
+            if (current_state != prev_state) begin
+                sif.keep_alive <= ~sif.keep_alive;
+                prev_state <= current_state;
+            end
             // Clear errors if requested through SPI
             if (spi_control.clear_errors) begin
                 sif.feedback_timeout_error <= '0;
