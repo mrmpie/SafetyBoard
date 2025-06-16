@@ -72,7 +72,9 @@ module spi_slave #(
             control_out <= '0;
             spi_shutdown_cmd <= '0;
             spi_pg_shutdown <= '0;
-        end else if (!cs_n) begin
+        end else begin
+            logic current_checksum_is_valid; // Moved declaration here
+            if (!cs_n) begin
             // Shift register operation
             shift_reg <= {shift_reg[6:0], mosi};
             bit_counter <= bit_counter + 1;
@@ -83,26 +85,26 @@ module spi_slave #(
                     3'b000: begin  // Command byte
                         cmd_reg <= {shift_reg[6:0], mosi};
                         cmd_received <= 1'b1;
-                        word_counter <= 3'b001;
+                            word_counter <= 3'b001; // Advance to Address state
                     end
                     3'b001: begin  // Address/Index byte
                         addr_reg <= {shift_reg[6:0], mosi};
                         addr_received <= 1'b1;
-                        word_counter <= 3'b010;
+                            word_counter <= 3'b010; // Advance to Data state
                     end
                     3'b010: begin  // Data byte
                         data_reg <= {shift_reg[6:0], mosi};
                         data_received <= 1'b1;
-                        word_counter <= 3'b011;
+                            word_counter <= 3'b011; // Advance to Checksum state
                     end
                     3'b011: begin  // Checksum byte
                         checksum_reg <= {shift_reg[6:0], mosi};
-                        checksum_valid <= ({shift_reg[6:0], mosi} == calculated_checksum);
-                        word_counter <= 3'b100;
-                        
-                        // Process write commands only if checksum matches
-                        if ({shift_reg[6:0], mosi} == calculated_checksum) begin
-                            transaction_valid <= 1'b1;
+                            current_checksum_is_valid = ({shift_reg[6:0], mosi} == calculated_checksum);
+                            checksum_valid <= current_checksum_is_valid; // Update status
+
+                            if (current_checksum_is_valid) begin
+                                transaction_valid <= 1'b1; // Mark transaction as valid
+                                // Process write commands
                             if (cmd_received && addr_received && data_received) begin
                                 case (cmd_reg)
                                     CMD_WRITE_CONTACTOR: begin
@@ -127,20 +129,27 @@ module spi_slave #(
                                     end
                                 endcase
                             end
-                        end
+                            end else begin
+                                transaction_valid <= 1'b0; // Mark transaction as invalid
+                            end
+
+                            // Logical transaction complete. Reset for the NEXT logical transaction.
+                            word_counter <= 3'b000;
+                            cmd_received <= 1'b0;
+                            addr_received <= 1'b0;
+                            data_received <= 1'b0;
+                            // checksum_valid and transaction_valid reflect the just-completed transaction.
                     end
                 endcase
+                    // bit_counter is reset when CS_N goes high (see below)
             end
-        end else begin
-            // Reset for next transaction
+            end else begin // CS_N is HIGH (inactive)
+                // When CS_N goes high, it signifies the end of the current *byte* transfer.
+                // Only reset the bit_counter. word_counter and other transaction state persist.
             bit_counter <= '0;
-            word_counter <= '0;
-            cmd_received <= '0;
-            addr_received <= '0;
-            data_received <= '0;
-            checksum_valid <= '0;
-            transaction_valid <= '0;
-            control_out.reset_req <= 1'b0;  // Auto-clear reset request
+                // Note: control_out.reset_req is NOT auto-cleared here.
+                // It should be cleared by the master via a CMD_WRITE_CONTROL or by system logic.
+            end
         end
     end
 
@@ -171,26 +180,46 @@ module spi_slave #(
         endcase
     end
 
-    // MISO output logic with checksum
+    logic miso_internal;
+    logic next_miso_bit_value;
+
+    localparam DEFAULT_MISO_CMD_PHASE_WORD = 8'hA5; // Default MISO word for command phase. Change as needed.
+
+    // Combinational logic to determine the data bit to be shifted out
     always_comb begin
-        if (cs_n) begin
-            miso = 1'b0;
+        // Default to 0. This value is used if none of the cases match,
+        // or for phases where MISO doesn't actively drive data from read_data/checksum.
+        next_miso_bit_value = DEFAULT_MISO_CMD_PHASE_WORD[7];
+
+        case (word_counter)
+            3'b000: next_miso_bit_value = DEFAULT_MISO_CMD_PHASE_WORD[7-bit_counter];
+            3'b001: next_miso_bit_value = 1'b0;  // Address phase (master writes, slave reads)
+            3'b010: begin  // Data phase (slave writes, master reads)
+                next_miso_bit_value = read_data[7-bit_counter];
+            end
+            3'b011: begin  // Checksum phase (slave writes, master reads)
+                logic [7:0] checksum_val; // Temporary variable for checksum calculation
+                checksum_val = cmd_reg ^ addr_reg ^ read_data;
+                next_miso_bit_value = checksum_val[7-bit_counter];
+            end
+            default: next_miso_bit_value = DEFAULT_MISO_CMD_PHASE_WORD[7];
+        endcase
+    end
+
+    // Register the MISO bit on the falling edge of SCLK
+    always_ff @(negedge sclk or negedge rst_n) begin
+        if (!rst_n) begin
+            miso_internal <= 1'b0;
         end else begin
-            case (word_counter)
-                3'b000: miso = 1'b0;  // Command phase (write-only)
-                3'b001: miso = 1'b0;  // Address phase (write-only)
-                3'b010: begin  // Data phase
-                    miso = read_data[7-bit_counter];
-                end
-                3'b011: begin  // Checksum phase
-                    // For reads, checksum is XOR of command, address, and read_data
-                    logic [7:0] read_checksum;
-                    read_checksum = cmd_reg ^ addr_reg ^ read_data;
-                    miso = read_checksum[7-bit_counter];
-                end
-                default: miso = 1'b0;
-            endcase
+            // miso_internal latches the value that should be driven on MISO.
+            // This happens on the falling edge of sclk.
+            miso_internal <= next_miso_bit_value;
         end
     end
+
+    // Final MISO output assignment
+    // MISO is driven by the registered miso_internal when cs_n is low (active).
+    // Otherwise, MISO is driven low.
+    assign miso = (!cs_n) ? miso_internal : 1'b0;
 
 endmodule
