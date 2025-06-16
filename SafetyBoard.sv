@@ -38,7 +38,7 @@ interface SafetyBoardInterface;
     
     modport SafetyBoard (
         input  clk, rst_n, requests, router_feedback, spi_mosi, spi_sclk, spi_cs_n,
-        output router_cmd, invalid_request, feedback_timeout_error, keep_alive
+        output router_cmd, invalid_request, feedback_timeout_error, keep_alive,
                current_state, validate_state, spi_miso,
         input  shutdown_commands,
         output pg_shutdown
@@ -46,7 +46,7 @@ interface SafetyBoardInterface;
 
     modport Test (
         output clk, rst_n, requests, router_feedback, spi_mosi, spi_sclk, spi_cs_n,
-        input  router_cmd, invalid_request, feedback_timeout_error, keep_alive
+        input  router_cmd, invalid_request, feedback_timeout_error, keep_alive,
               current_state, validate_state, spi_miso,
         output shutdown_commands,
         input  pg_shutdown
