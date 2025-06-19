@@ -177,20 +177,20 @@ set_location_assignment PIN_K2 -to sif.spi_cs_n
 set_location_assignment PIN_F1 -to sif.invalid_request
 set_location_assignment PIN_E1 -to sif.feedback_timeout_error
 
-# shutdown_commands[5:0], pg_shutdown[5:0] assignments
+# shutdown_commands_n[5:0], pg_shutdown_n[5:0] assignments
 # Primary: IOBANK_5
-set_location_assignment PIN_K10 -to sif.shutdown_commands[0]
-set_location_assignment PIN_K11 -to sif.shutdown_commands[1]
-set_location_assignment PIN_J10 -to sif.shutdown_commands[2]
-set_location_assignment PIN_L12 -to sif.shutdown_commands[3]
-set_location_assignment PIN_K12 -to sif.shutdown_commands[4]
-set_location_assignment PIN_L13 -to sif.shutdown_commands[5]
-set_location_assignment PIN_J12 -to sif.pg_shutdown[0]
-set_location_assignment PIN_H9 -to sif.pg_shutdown[1]
-set_location_assignment PIN_J9 -to sif.pg_shutdown[2]
-set_location_assignment PIN_J13 -to sif.pg_shutdown[3]
-set_location_assignment PIN_H10 -to sif.pg_shutdown[4]
-set_location_assignment PIN_H13 -to sif.pg_shutdown[5]
+set_location_assignment PIN_K10 -to sif.shutdown_commands_n[0]
+set_location_assignment PIN_K11 -to sif.shutdown_commands_n[1]
+set_location_assignment PIN_J10 -to sif.shutdown_commands_n[2]
+set_location_assignment PIN_L12 -to sif.shutdown_commands_n[3]
+set_location_assignment PIN_K12 -to sif.shutdown_commands_n[4]
+set_location_assignment PIN_L13 -to sif.shutdown_commands_n[5]
+set_location_assignment PIN_J12 -to sif.pg_shutdown_n[0]
+set_location_assignment PIN_H9 -to sif.pg_shutdown_n[1]
+set_location_assignment PIN_J9 -to sif.pg_shutdown_n[2]
+set_location_assignment PIN_J13 -to sif.pg_shutdown_n[3]
+set_location_assignment PIN_H10 -to sif.pg_shutdown_n[4]
+set_location_assignment PIN_H13 -to sif.pg_shutdown_n[5]
 
 # current_state[2:0], validate_state[2:0] assignments
 # Primary: IOBANK_1A/1B

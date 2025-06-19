@@ -26,29 +26,30 @@ interface SafetyBoardInterface;
     
     // Status signals
     logic invalid_request;          // Indicates unsafe interlink request
-    logic feedback_timeout_error;   // Indicates feedback timeout occurred
+    logic thermal_shutdown_n;       // Active low: Indicates thermal shutdown occurred
     
     // Debug signals
     logic [2:0] current_state;      // Current state of the state machine
     logic [2:0] validate_state;     // Current state of the validation state machine
     
     // New signals
-    logic [5:0] shutdown_commands;  // From outputs to safety board
+    logic [5:0] shutdown_commands_n;  // From outputs to safety board
+    logic [5:0] dcs_shutdown_cmd_n;   // From DC Controller to safety board
     logic [5:0] pg_shutdown;        // From safety board to power groups
     
     modport SafetyBoard (
-        input  clk, rst_n, requests, router_feedback, spi_mosi, spi_sclk, spi_cs_n,
-        output router_cmd, invalid_request, feedback_timeout_error, keep_alive,
+        input  clk, rst_n, requests, router_feedback, spi_mosi, spi_sclk, spi_cs_n, thermal_shutdown_n,
+        output router_cmd, invalid_request, keep_alive,
                current_state, validate_state, spi_miso,
-        input  shutdown_commands,
+        input  shutdown_commands_n, dcs_shutdown_cmd_n,
         output pg_shutdown
     );
 
     modport Test (
-        output clk, rst_n, requests, router_feedback, spi_mosi, spi_sclk, spi_cs_n,
-        input  router_cmd, invalid_request, feedback_timeout_error, keep_alive,
+        output clk, rst_n, requests, router_feedback, spi_mosi, spi_sclk, spi_cs_n, thermal_shutdown_n,
+        input  router_cmd, invalid_request, keep_alive,
               current_state, validate_state, spi_miso,
-        output shutdown_commands,
+        output shutdown_commands_n, dcs_shutdown_cmd_n,
         input  pg_shutdown
     );
 endinterface
@@ -94,7 +95,7 @@ module SafetyBoard #(
     logic [$clog2(FEEDBACK_TIMEOUT_CYCLES):0] feedback_timeout_counter;
     logic [20:0] pending_command;
     logic [20:0] captured_requests;  // Store requests at start of validation
-    
+    logic feedback_timeout_error;
 
     // Array to store output assignments for each PG (0 = no output, 1-6 = connected to that output)
     int pg_output_assignments[6];      // Used for validating new requests
@@ -102,15 +103,16 @@ module SafetyBoard #(
 
     // Internal signals for SPI interface
     logic [20:0] spi_requests;
-    logic [5:0]  spi_shutdown_cmd;
-    logic [5:0]  spi_pg_shutdown;
+    logic [5:0]  spi_shutdown_cmd_n;
+    logic [5:0]  spi_pg_shutdown_n;
     control_reg_t spi_control;
     control_reg_t control_reg;
     status_reg_t  status;
 
     // Status register assignment
-    assign status.feedback_timeout_error = sif.feedback_timeout_error;
+    assign status.thermal_shutdown = ~sif.thermal_shutdown_n;
     assign status.invalid_request = sif.invalid_request;
+    assign status.feedback_timeout_error = feedback_timeout_error;
     assign status.reserved = '0;
 
     // Instantiate SPI slave
@@ -128,9 +130,9 @@ module SafetyBoard #(
         .status(status),
         .control(control_reg),
         .control_out(spi_control),
-        .spi_shutdown_cmd(spi_shutdown_cmd),
-        .shutdown_status(sif.shutdown_commands),
-        .spi_pg_shutdown(spi_pg_shutdown)
+        .spi_shutdown_cmd(spi_shutdown_cmd_n),
+        .shutdown_status(sif.shutdown_commands_n),
+        .spi_pg_shutdown(spi_pg_shutdown_n)
     );
 
     // Combined reset signal
@@ -251,23 +253,27 @@ module SafetyBoard #(
     endfunction
     // Combinatorial logic for shutdown mapping using the pg_output_assignments
     always_comb begin
-        sif.pg_shutdown = '0;
-        
-        // For each PG
-        for (int pg = 0; pg < 6; pg++) begin
-            // If this PG is mapped to an output (value 1-6)
-            if (pg_output_assignments_current[pg] != 0) begin
-                // Check if that output is requesting shutdown from either interface
-                // Subtract 1 because array is 0-5 but assignments are 1-6
-                if (sif.shutdown_commands[pg_output_assignments_current[pg] - 1] || 
-                    spi_shutdown_cmd[pg_output_assignments_current[pg] - 1]) begin
-                    sif.pg_shutdown[pg] = 1'b1;
+        if (!sif.thermal_shutdown_n) begin
+            // Active low: shutdown all PGs
+            sif.pg_shutdown = '0;
+        end else begin
+            sif.pg_shutdown = '0;
+            // For each PG
+            for (int pg = 0; pg < 6; pg++) begin
+                // If this PG is mapped to an output (value 1-6)
+                if (pg_output_assignments_current[pg] != 0) begin
+                    // Check if that output is not requesting shutdown from either interface
+                    // Subtract 1 because array is 0-5 but assignments are 1-6
+                    if (sif.shutdown_commands_n[pg_output_assignments_current[pg] - 1] || 
+                        spi_shutdown_cmd_n[pg_output_assignments_current[pg] - 1] || 
+                        sif.dcs_shutdown_cmd_n[pg_output_assignments_current[pg] - 1]) begin
+                        sif.pg_shutdown[pg] = 1'b1;
+                    end
                 end
             end
+            // Add direct PG shutdown from SPI
+            sif.pg_shutdown = sif.pg_shutdown | spi_pg_shutdown_n;
         end
-
-        // Add direct PG shutdown from SPI
-        sif.pg_shutdown = sif.pg_shutdown | spi_pg_shutdown;
     end
 
     // Main control logic
@@ -275,7 +281,7 @@ module SafetyBoard #(
         if (!combined_rst_n) begin
             contactor_commanded <= '0;
             sif.invalid_request <= '0;
-            sif.feedback_timeout_error <= '0;
+            feedback_timeout_error <= '0;
             feedback_timeout_counter <= '0;
             for (int i = 0; i < 6; i++) begin
                 pg_output_assignments[i] = 0;
@@ -300,7 +306,7 @@ module SafetyBoard #(
             end
             // Clear errors if requested through SPI
             if (spi_control.clear_errors) begin
-                sif.feedback_timeout_error <= '0;
+                feedback_timeout_error <= '0;
                 sif.invalid_request <= '0;
             end
 
@@ -401,6 +407,10 @@ module SafetyBoard #(
                             if (!validation_invalid) begin
                                 // Use captured requests for command
                                 pending_command = captured_requests;
+                                // Copy pg_output_assignments to current since this configuration is now valid
+                                for (int i = 0; i < 6; i++) begin
+                                    pg_output_assignments_current[i] = pg_output_assignments[i];
+                                end
                                 contactor_commanded <= pending_command;
                             end
                             
@@ -419,11 +429,11 @@ module SafetyBoard #(
                     if (feedback_match) begin
                         current_state <= COMMAND_READY;
                         feedback_timeout_counter <= '0;
-                        sif.feedback_timeout_error <= 1'b0; // Clear timeout error if feedback matches
+                        feedback_timeout_error <= 1'b0; // Clear timeout error if feedback matches
                     end else begin
                         // Check for timeout
                         if (feedback_timeout_counter >= FEEDBACK_TIMEOUT_CYCLES) begin
-                            sif.feedback_timeout_error <= 1'b1;
+                            feedback_timeout_error <= 1'b1;
                             current_state <= FEEDBACK_ERROR;
                         end else begin
                             feedback_timeout_counter <= feedback_timeout_counter + 1;
@@ -437,10 +447,6 @@ module SafetyBoard #(
                 end
 
                 COMMAND_READY: begin
-                    // Copy pg_output_assignments to current since this configuration is now valid
-                    for (int i = 0; i < 6; i++) begin
-                        pg_output_assignments_current[i] = pg_output_assignments[i];
-                    end
                     current_state <= IDLE;
                 end
 
@@ -451,7 +457,11 @@ module SafetyBoard #(
 
     // Output assignment
     always_comb begin
-        sif.router_cmd = contactor_commanded;
+        if (!sif.thermal_shutdown_n) begin     
+            sif.router_cmd = '0;
+        end else begin
+            sif.router_cmd = contactor_commanded;
+        end
     end
 
 endmodule
@@ -488,7 +498,7 @@ module SafetyBoard_tb;
         sif.rst_n = 0;
         sif.requests = '0;
         sif.router_feedback = '0;
-        sif.shutdown_commands = '0;
+        sif.shutdown_commands_n = '0;
         sif.spi_cs_n = 1;
         sif.spi_mosi = 0;
         
@@ -522,7 +532,7 @@ module SafetyBoard_tb;
         
         // Test 4: Shutdown Command Test
         $display("\nTest 4: Shutdown Command Test");
-        sif.shutdown_commands[0] = 1'b1;  // Direct shutdown for PG0
+        sif.shutdown_commands_n[0] = 1'b1;  // Direct shutdown for PG0
         #(CLK_PERIOD*10);
         
         // Test 5: SPI Shutdown Command
@@ -621,7 +631,7 @@ module SafetyBoard_tb;
             sif.current_state == 3'b101 ? "COMMAND_READY" : "UNKNOWN");
         $display("Router Command: %b", sif.router_cmd);
         $display("Invalid Request: %b", sif.invalid_request);
-        $display("Feedback Timeout Error: %b", sif.feedback_timeout_error);
+        $display("Feedback Timeout Error: %b", feedback_timeout_error);
         $display("PG Shutdown Status: %b", sif.pg_shutdown);
     end
 
